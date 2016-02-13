@@ -1,76 +1,72 @@
 module.exports = (function() {
   'use strict';
 
-  const fs = require('fs');
-  const fs_extra = require('fs-extra');
+  const fs = require('fs-extra');
   const path = require('path');
   const inquirer = require('inquirer');
   const inflect = require('i')();
   const colors = require('colors/safe');
+  const async = require('async');
 
   return {
     new: function(args, flags, callback) {
       const rootPath = path.resolve(__dirname);
+      const version = require('../../../package.json').version;
 
       console.log('');
-      console.log(`Welcome to ${colors.bold.green('Nodal!')}`);
-      console.log('');
-      console.log('Let\'s get some information about your project...');
+      console.log(`Welcome to ${colors.bold.green('Nodal! v' + version)}`);
       console.log('');
 
-      var questions = [
-        {
-          name: 'name',
-          type: 'input',
-          default: 'my-nodal-project',
-          message: 'Name',
-        },
-        {
-          name: 'author',
-          type: 'input',
-          default: 'mysterious author',
-          message: 'Author',
-        },
-        {
-          name: 'heroku',
-          type: 'confirm',
-          default: false,
-          message: 'heroku support?',
-        },
-        {
-          name: 'database',
-          type: 'confirm',
-          default: false,
-          message: 'Database support?',
-        },
-        {
-          name: 'databaseName',
-          type: 'input',
-          default: (answers) => inflect.underscore(answers.name),
-          message: 'Database name',
-          when: (answers) => answers.database
-        },
-      ];
+      let data = {
+        name: args[0] ? (args[0][0] || '').replace(/_/g, ' ') : '',
+        author: (flags.author || '').replace(/_/g, ' ') || '',
+        heroku: flags.hasOwnProperty('heroku'),
+        ignoreOutput: flags.hasOwnProperty('ignore-output')
+      };
+
+      let questions = [];
+
+      !data.name && questions.push({
+        name: 'name',
+        type: 'input',
+        default: 'my-nodal-project',
+        message: 'Name',
+      });
+
+      !data.author && questions.push({
+        name: 'author',
+        type: 'input',
+        default: 'mysterious author',
+        message: 'Author',
+      });
 
       inquirer.prompt(questions, (promptResult) => {
 
+        promptResult.name = promptResult.name || data.name;
+        promptResult.author = promptResult.author || data.author;
+        promptResult.heroku = promptResult.heroku || data.heroku;
+
         promptResult.simpleName = promptResult.name.replace(/\s/gi, '-');
-        promptResult.databaseName = inflect.underscore(promptResult.databaseName);
+
+        promptResult.databaseName = inflect.underscore(promptResult.simpleName);
+
+        promptResult.version = require('../../../package.json').version;
+
         let dirname = promptResult.name.replace(/[^A-Za-z0-9-_]/gi, '-').toLowerCase();
 
-        console.log('');
         console.log('Creating directory "' + dirname + '"...');
         console.log('');
 
         if (fs.existsSync('./' + dirname)) {
           callback(new Error('Directory "' + dirname + '" already exists, try a different project name'));
         }
+
         fs.mkdirSync('./' + dirname);
 
         console.log('Copying Nodal directory structure and files...');
         console.log('');
 
-        fs_extra.copy(rootPath + '/../../../src', './' + dirname, function(err) {
+        fs.copy(rootPath + '/../../../src', './' + dirname, function(err) {
 
           if (err) return callback(err);
 
@@ -104,54 +100,47 @@ module.exports = (function() {
           // defaults to an underscored version  <appname>_development
           let dbjson = JSON.parse(fs.readFileSync(rootPath + '/templates/db.json'));
           dbjson.development.main.database = promptResult.databaseName + '_development';
-          fs.writeFileSync('./' + dirname + '/config/db.json', JSON.stringify(dbjson, null, 4));
+          dbjson.test.main.database = promptResult.databaseName + '_test';
+          fs.writeFileSync('./' + dirname + '/config/db.json', JSON.stringify(dbjson, null, 2));
 
-          // Lets enable database support by default if the user said yes to the prompt
-          // NOTE: I didnt see the need to templatize this since it was quicker to re-write
-          //       the copied in file
-          if (promptResult.database) {
-            const appFile = './' + dirname + '/app/app.js';
-            let contents = fs.readFileSync(appFile).toString()
-            fs.writeFileSync(appFile, contents.replace(/\/\/ /g, ''));
-          }
+          let copyNodeModules = [
+            'cli', 'core', 'test', 'node_modules',
+            'package.json'
+          ];
 
-          let spawn = require('cross-spawn-async');
+          async.series(
+            copyNodeModules.map(m => {
+              return (callback) => {
 
-          let child = spawn('npm', ['cache', 'clean'], {
-            cwd: process.cwd() + '/' + dirname,
-            stdio: 'inherit'
-          });
+                console.log(`Copying ${m}...`);
+                fs.copy(`${rootPath}/../../../${m}`, `./${dirname}/node_modules/nodal/${m}`, callback);
 
-          child.on('exit', function() {
+              };
+            }),
+            (err) => {
 
-            let child = spawn('npm', ['install'], {
-              cwd: process.cwd() + '/' + dirname,
-              stdio: 'inherit'
-            });
+              if (err) {
+                callback(err);
+              }
 
-            console.log('Installing packages in this directory...');
-            console.log('');
+              if (!data.ignoreOutput) {
+                console.log('');
+                console.log(colors.bold.green('All done!'));
+                console.log('');
+                console.log('Your new Nodal project, ' + colors.bold(promptResult.name) + ', is ready to go! :)');
+                console.log('');
+                console.log('Have fun ' + promptResult.author + ', and check out https://github.com/keithwhor/nodal for the most up-to-date Nodal information')
+                console.log('');
+                console.log(colors.bold('Pro tip: ') + 'You can try running your server right away with:');
+                console.log('');
+                console.log('  cd ' + dirname + ' && nodal s');
+                console.log('');
+              }
 
-            child.on('exit', function() {
-              console.log('');
-              console.log(colors.bold.green('All done!'));
-              console.log('');
-              console.log('Your new Nodal project, ' + colors.bold(promptResult.name) + ', is ready to go! :)');
-              console.log('');
-              console.log('Have fun ' + promptResult.author + ', and check out https://github.com/keithwhor/nodal for the most up-to-date Nodal information')
-              console.log('');
-              console.log(colors.bold('Pro tip: ') + 'You can try running your server right away with:');
-              console.log('');
-              console.log('  cd ' + dirname + ' && nodal s');
-              console.log('');
-              callback();
-            });
+              callback(null);
 
-            process.on('exit', function() {
-              child && child.kill();
-            });
-
-          });
+            }
+          );
 
         });
 

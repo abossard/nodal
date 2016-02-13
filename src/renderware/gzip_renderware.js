@@ -5,13 +5,13 @@ module.exports = (function() {
   const Nodal = require('nodal');
   const zlib = require('zlib');
 
-  class GzipMiddleware extends Nodal.Middleware {
+  class GzipRenderware {
 
     exec(controller, data, callback) {
 
       let contentType = controller.getHeader('Content-Type', '').split(';')[0];
 
-      let acceptEncoding = controller._request.headers['accept-encoding'] || '';
+      let acceptEncoding = controller._requestHeaders['accept-encoding'] || '';
       let canCompress = !!{
         'text/plain': 1,
         'text/html': 1,
@@ -62,6 +62,6 @@ module.exports = (function() {
 
   }
 
-  return GzipMiddleware;
+  return GzipRenderware;
 
 })();

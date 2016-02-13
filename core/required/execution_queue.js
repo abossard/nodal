@@ -11,17 +11,63 @@ module.exports = (function() {
   class ExecutionQueue {
 
     constructor() {
-      this._queue= [];
+      this._queue = [];
+    }
+
+    prepend(executionQueue) {
+      if (!(executionQueue instanceof ExecutionQueue)) {
+        throw new Error('Can only prepend another execution queue');
+      }
+      this._queue = executionQueue._queue.concat(this._queue);
+    }
+
+    append(executionQueue) {
+      if (!(executionQueue instanceof ExecutionQueue)) {
+        throw new Error('Can only append another execution queue');
+      }
+      this._queue = this._queue.concat(executionQueue._queue);
     }
 
     /**
-    * Tell the manager to put an object in the queue.
-    * @param {Object} itemConstructor The item constructor (must have exec function) you wish to add to the queue.
+    * Tell the manager to put an object in the queue (last)
+    * @param {Object} arguments The item constructor (must have exec function) plus other arguments you wish to add to the queue.
     */
-    use(itemConstructor) {
+    use() {
 
-      let item = new itemConstructor();
-      this._queue.push(item);
+      let args = [].slice.call(arguments);
+
+      if (args.length) {
+        let itemConstructor = args[0];
+        let item = new (itemConstructor.bind.apply(itemConstructor, args))();
+
+        this._queue.push(item);
+      }
+
+    }
+
+    /**
+    * Alias for ExecutionQueue#use
+    */
+    push() {
+
+      this.use.apply(this, arguments);
+
+    }
+
+    /**
+    * Tell the manager to put an object in the queue (first)
+    * @param {Object} arguments The item constructor (must have exec function) plus other arguments you wish to add to the queue.
+    */
+    unshift() {
+
+      let args = [].slice.call(arguments);
+
+      if (args.length) {
+        let itemConstructor = args[0];
+        let item = new (itemConstructor.bind.apply(itemConstructor, args))();
+
+        this._queue.unshift(item);
+      }
 
     }
 
@@ -36,10 +82,10 @@ module.exports = (function() {
       let args = [].slice.call(arguments);
 
       let fnComplete = args.pop();
-      let steady = args.shift();
+      let steady = args.splice(0, 1);
 
-      if (typeof steady !== 'object' || steady === null) {
-        steady = {};
+      if (steady.length && typeof steady[0] !== 'object' || steady[0] === null) {
+        steady[0] = {};
       }
 
       if (typeof fnComplete !== 'function') {
@@ -54,7 +100,7 @@ module.exports = (function() {
       ].concat(
         this._queue.map(item => {
           return function() {
-            item.exec.apply(item, [steady].concat([].slice.call(arguments)));
+            item.exec.apply(item, steady.concat([].slice.call(arguments)));
           };
         })
       );

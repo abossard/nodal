@@ -17,22 +17,32 @@ module.exports = (function() {
     Controller: null,
     Daemon: null,
     Database: null,
-    DummyRouter: null,
+    GraphQuery: null,
     Initializer: null,
+    ItemArray: null,
     Middleware: null,
     Migration: null,
+    Mime: null,
     Model: null,
     ModelArray: null,
     ModelFactory: null,
+    RelationshipGraph: null,
+    Renderware: null,
     Router: null,
     Scheduler: null,
     SchedulerTask: null,
     SchemaGenerator: null,
-    Test: null,
-    TestRunner: null,
+    StrongParam: null,
+    Task: null,
+    Template: null,
     my: {
       Config: null,
-      Schema: null
+      Schema: null,
+      bootstrapper: null
+    },
+    mocha: {
+      Test: null,
+      TestRunner: null
     }
   };
 
@@ -40,6 +50,7 @@ module.exports = (function() {
 
   let LazyNodal = {
     my: {},
+    mocha: {},
     require: function(filename) {
       return require(process.cwd() + '/' + filename);
     },
@@ -47,8 +58,7 @@ module.exports = (function() {
       mime: require('mime-types'),
       inflect: require('i')()
     },
-    rootDirectory: process.cwd(),
-    env: process.env.NODE_ENV || 'development'
+    env: require('./env.js')
   };
 
   Object.defineProperties(LazyNodal, {
@@ -88,15 +98,21 @@ module.exports = (function() {
       },
       enumerable: true
     },
-    DummyRouter: {
+    GraphQuery: {
       get: function() {
-        return Nodal.DummyRouter || (Nodal.DummyRouter = require('./required/dummy_router.js'));
+        return Nodal.GraphQuery || (Nodal.GraphQuery = require('./required/graph_query.js'));
       },
       enumerable: true
     },
     Initializer: {
       get: function() {
         return Nodal.Initializer || (Nodal.Initializer = require('./required/initializer.js'));
+      },
+      enumerable: true
+    },
+    ItemArray: {
+      get: function() {
+        return Nodal.ItemArray || (Nodal.ItemArray = require('./required/item_array.js'));
       },
       enumerable: true
     },
@@ -109,6 +125,12 @@ module.exports = (function() {
     Migration: {
       get: function() {
         return Nodal.Migration || (Nodal.Migration = require('./required/db/migration.js'));
+      },
+      enumerable: true
+    },
+    Mime: {
+      get: function() {
+        return Nodal.Mime || (Nodal.Mime = require('./required/mime.js'));
       },
       enumerable: true
     },
@@ -127,6 +149,18 @@ module.exports = (function() {
     ModelFactory: {
       get: function() {
         return Nodal.ModelFactory || (Nodal.ModelFactory = require('./required/model_factory.js'));
+      },
+      enumerable: true
+    },
+    RelationshipGraph: {
+      get: function() {
+        return Nodal.RelationshipGraph || (Nodal.RelationshipGraph = require('./required/relationship_graph.js'));
+      },
+      enumerable: true
+    },
+    Renderware: {
+      get: function() {
+        return Nodal.Renderware || (Nodal.Renderware = require('./required/renderware.js'));
       },
       enumerable: true
     },
@@ -154,30 +188,57 @@ module.exports = (function() {
       },
       enumerable: true
     },
-    Test: {
+   StrongParam: {
       get: function() {
-        return Nodal.Test || (Nodal.Test = require('./required/test.js'));
+        return Nodal.StrongParam || (Nodal.StrongParam = require('./required/strong_param.js'));
       },
       enumerable: true
     },
-    TestRunner: {
+    Task: {
       get: function() {
-        return Nodal.TestRunner || (Nodal.TestRunner = require('./required/test_runner.js'));
+        return Nodal.Task || (Nodal.Task = require('./required/task.js'));
       },
       enumerable: true
-    }
+    },
+    Template: {
+      get: function() {
+        return Nodal.Template || (Nodal.Template = require('./required/template.js'));
+      },
+      enumerable: true
+    },
   });
 
   Object.defineProperties(LazyNodal.my, {
     Config: {
       get: function() {
-        return Nodal.my.Config || (Nodal.my.Config = require('./required/my/config.js')(LazyNodal));
+        return Nodal.my.Config || (Nodal.my.Config = require('./my/config.js'));
       },
       enumerable: true
     },
     Schema: {
       get: function() {
-        return Nodal.my.Schema || (Nodal.my.Schema = require('./required/my/schema.js')(LazyNodal));
+        return Nodal.my.Schema || (Nodal.my.Schema = require('./my/schema.js'));
+      },
+      enumerable: true
+    },
+    bootstrapper: {
+      get: function() {
+        return Nodal.my.bootstrapper || (Nodal.my.bootstrapper = require('./my/bootstrapper.js'));
+      },
+      enumerable: true
+    }
+  });
+
+  Object.defineProperties(LazyNodal.mocha, {
+    Test: {
+      get: function() {
+        return Nodal.mocha.Test || (Nodal.mocha.Test = require('./mocha/test.js'));
+      },
+      enumerable: true
+    },
+    TestRunner: {
+      get: function() {
+        return Nodal.mocha.TestRunner || (Nodal.mocha.TestRunner = require('./mocha/test_runner.js'));
       },
       enumerable: true
     }

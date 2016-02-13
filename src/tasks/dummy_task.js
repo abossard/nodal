@@ -4,9 +4,9 @@ module.exports = (function() {
 
   const Nodal = require('nodal');
 
-  class DummyTask extends Nodal.SchedulerTask {
+  class DummyTask extends Nodal.Task {
 
-    exec(app, callback) {
+    exec(app, args, callback) {
 
       console.log('Dummy task executed');
       callback();

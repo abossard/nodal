@@ -2,7 +2,10 @@ module.exports = (function() {
 
   'use strict';
 
+  const ItemArray = require('./item_array.js');
   const ModelArray = require('./model_array.js');
+
+  const utilities = require('./utilities.js');
 
   /**
   * The query composer (ORM)
@@ -27,122 +30,130 @@ module.exports = (function() {
 
     /**
     * Given rows with repeated data (due to joining in multiple children), return only parent models (but include references to their children)
-    * @private
     * @param {Array} rows Rows from sql result
+    * @param {Boolean} grouped Are these models grouped, if so, different procedure
     * @return {Nodal.ModelArray}
+    * @private
     */
-    __parseModelsFromRows__(rows) {
+    __parseModelsFromRows__(rows, grouped) {
 
-      // console.log('START PARSE', rows.length);
+      if (grouped) {
+        return ItemArray.from(rows);
+      }
 
-      let s = new Date().valueOf();
+      if (!rows.length) {
+        return new ModelArray(this.Model);
+      }
+
+      let keys = Object.keys(rows[0]);
+      let cache = {};
+      let mainCache = {};
+      cache[this.Model.name] = mainCache;
+
+      let columns = keys
+        .filter(k => k[0] !== '$');
+
+      let columnsObject = columns
+        .reduce((columns, k) => {
+
+          columns[k] = null;
+          return columns;
+
+        }, {});
+
+      let joinsObject = keys
+        .filter(k => k[0] === '$')
+        .reduce((joinsObject, k) => {
+
+          let mid = k.indexOf('$', 1);
+          let name = k.substring(1, mid)
+          let field = k.substring(mid + 1);
+          let relationship = this.Model.relationship(name);
+
+          joinsObject[name] = joinsObject[name] || {};
+
+          let rModel = relationship.getModel()
+          joinsObject[name].Model = rModel;
+          cache[rModel.name] = {};
+
+          joinsObject[name].name = name;
+          joinsObject[name].key = k;
+          joinsObject[name].multiple = relationship.immediateMultiple();
+
+          joinsObject[name].columns = joinsObject[name].columns || [];
+          joinsObject[name].columns.push(field);
+
+          joinsObject[name].columnsObject = joinsObject[name].columnsObject || {};
+          joinsObject[name].columnsObject[field] = null;
+
+          joinsObject[name].cachedModel = null;
+
+          return joinsObject;
+
+        }, {});
+
+      let joins = Object
+        .keys(joinsObject)
+        .sort((a, b) => a.length > b.length ? 1 : -1)
+        .map(k => joinsObject[k]);
 
       let models = new ModelArray(this.Model);
 
-      let rowKeys = [];
-      rows.length && (rowKeys = Object.keys(rows[0]));
-
-      // First, grab all the keys and multiple keys we need...
-      let coreKeys = rowKeys.filter(key => key[0] !== '$');
-      let joinSingleKeys = rowKeys.filter(key => key[0] === '$' && key[1] !== '$').map(key => key.substr(1));
-      let joinMultipleKeys = rowKeys.filter(key => key[0] === '$' && key[1] === '$').map(key => key.substr(2));
-
-      let reduceKeys = (prev, key) => {
-
-        let i = key.indexOf('$');
-        let joinName = key.substr(0, i);
-        key = key.substr(i + 1);
-        prev[joinName] = prev[joinName] || [];
-        prev[joinName].push(key);
-        return prev;
-
-      };
-
-      let joinSingle = joinSingleKeys.reduce(reduceKeys, {});
-      let joinSingleNames = Object.keys(joinSingle);
-
-      let joinMultiple = joinMultipleKeys.reduce(reduceKeys, {});
-      let joinMultipleNames = Object.keys(joinMultiple);
-
-      let rowCache = {};
-      let objectCache = {};
-      let rowObjectCache = {};
-
       rows.forEach(row => {
 
-        let model = rowCache[row.id];
-        let curRowObjectCache = rowObjectCache[row.id] = rowObjectCache[row.id] || {};
+        let model = mainCache[row.id];
 
         if (!model) {
-          model = rowCache[row.id] = new this.Model(row, true);
+
+          model = mainCache[row.id] = new this.Model(columns.reduce((obj, k) => {
+            obj[k] = row[k];
+            return obj;
+          }, columnsObject), true);
+
           models.push(model);
+
         }
 
-        joinSingleNames.forEach(name => {
+        joins.forEach(join => {
 
-          let id = row[`\$${name}\$id`];
-          if (id === null) {
+          let id = row[`\$${join.name}\$id`];
+
+          let name = join.name;
+          let names = name.split('__');
+          let joinName = names.pop();
+          let parentName = names.join('__');
+
+          let parentModel = parentName ? joinsObject[parentName].cachedModel : model;
+
+          if (join.multiple) {
+            parentModel && (parentModel.joined(joinName) || parentModel.setJoined(joinName, new ModelArray(join.Model)));
+          }
+
+          if (!id) {
             return;
           }
 
-          objectCache[name] = objectCache[name] || {};
-          let cached = objectCache[name][id];
+          let joinCache = cache[join.Model.name];
+          let joinModel = join.cachedModel = joinCache[id];
 
-          curRowObjectCache[name] = curRowObjectCache[name] || {};
-          let cachedForRow = curRowObjectCache[name][id];
-
-          if (!cached) {
-            objectCache[name][id] = cached = new (this.Model.joinInformation(name).Model)(
-              joinSingle[name].reduce((prev, key) => {
-                prev[key] = row[`\$${name}\$${key}`];
-                return prev;
-              }, {}),
-              true
-            );
+          if (!joinModel) {
+            joinModel = join.cachedModel = joinCache[id] = new join.Model(join.columns.reduce((obj, k) => {
+              obj[k] = row[`\$${join.name}\$${k}`];
+              return obj;
+            }, join.columnsObject), true)
           }
 
-          if (!cachedForRow) {
-            curRowObjectCache[name][id] = cachedForRow = cached;
-            model.set(name, cached);
-          }
 
-        });
-
-        joinMultipleNames.forEach(name => {
-
-          let modelArray = model.get(name) || model.set(name, new ModelArray(this.Model.joinInformation(name).Model));
-
-          let id = row[`\$\$${name}\$id`];
-          if (id === null) {
-            return;
-          }
-
-          objectCache[name] = objectCache[name] || {};
-          let cached = objectCache[name][id];
-
-          curRowObjectCache[name] = curRowObjectCache[name] || {};
-          let cachedForRow = curRowObjectCache[name][id];
-
-          if (!cached) {
-            objectCache[name][id] = cached = new (this.Model.joinInformation(name).Model)(
-              joinMultiple[name].reduce((prev, key) => {
-                prev[key] = row[`\$\$${name}\$${key}`];
-                return prev;
-              }, {}),
-              true
-            );
-          }
-
-          if (!cachedForRow) {
-            curRowObjectCache[name][id] = cachedForRow = cached;
-            modelArray.push(cached);
+          if (join.multiple) {
+            let modelArray = parentModel.joined(joinName);
+            !modelArray.has(joinModel) && modelArray.push(joinModel);
+          } else {
+            parentModel.joined(joinName) || parentModel.setJoined(joinName, joinModel);
           }
 
         });
 
       });
-
-      // console.log('END PARSE', new Date().valueOf() - s);
 
       return models;
 
@@ -150,8 +161,8 @@ module.exports = (function() {
 
     /**
     * Collapses linked list of queries into an array (for .reduce, .map etc)
-    * @private
     * @return {Array}
+    * @private
     */
     __collapse__() {
 
@@ -168,32 +179,107 @@ module.exports = (function() {
     }
 
     /**
-    * Reduces an array of composer queries to a single query information object
+    * Removes last limit command from a collapsed array of composer commands
+    * @param {Array} [composerArray] Array of composer commands
+    * @return {Array}
     * @private
+    */
+    __removeLastLimitCommand__(composerArray) {
+
+      let found = composerArray.map(c => c._command && c._command.type).lastIndexOf('limit');
+      (found !== -1) && composerArray.splice(found, 1);
+      return composerArray;
+
+    }
+
+    /**
+    * Gets last limit command from a collapsed array of composer commands
+    * @param {Array} [composerArray] Array of composer commands
+    * @return {Array}
+    * @private
+    */
+    __getLastLimitCommand__(composerArray) {
+
+      let found = composerArray.map(c => c._command && c._command.type).lastIndexOf('limit');
+      return found >= 0 ? composerArray.splice(found, 1)[0] : null;
+
+    }
+
+    /**
+    * Determines whether this composer query represents a grouped query or not
+    * @return {Boolean}
+    * @private
+    */
+    __isGrouped__() {
+      return this.__collapse__().filter(c => c._command && c._command.type === 'groupBy').length > 0;
+    }
+
+    /**
+    * Reduces an array of composer queries to a single query information object
     * @param {Array} [composerArray]
     * @return {Object} Looks like {commands: [], joins: []}
+    * @private
     */
     __reduceToQueryInformation__(composerArray) {
 
-      let joins = [];
+      let joins = {};
 
       let commands = composerArray.reduce((p, c) => {
 
         let composerCommand = c._command || {type: 'where', data: {comparisons: []}};
-        let lastCommand = p[p.length - 1];
-        let command = {};
-
-        if (lastCommand && !lastCommand[composerCommand.type]) {
-          command = lastCommand;
-        } else {
-          p.push(command);
-        }
 
         if (composerCommand.type === 'join') {
 
-          joins.push(Object.keys(composerCommand.data).reduce((p, c) => {
-            return (p[c] = composerCommand.data[c], p);
-          }, {}));
+          let curJoinName = composerCommand.data.name;
+          let curJoinData = composerCommand.data.joinData;
+          joins[curJoinName] = curJoinData;
+          Object.keys(joins)
+            .filter(joinName => joinName !== curJoinName)
+            .forEach(joinName => {
+
+              if (curJoinName.indexOf(joinName) === 0) {
+                joins[curJoinName] = joins[joinName].concat(curJoinData.slice(joins[joinName].length));
+                delete joins[joinName];
+              } else if (joinName.indexOf(curJoinName) === 0) {
+                joins[joinName][curJoinData.length - 1] = curJoinData[curJoinData.length - 1];
+                delete joins[curJoinName];
+              }
+
+            });
+
+          return p;
+
+        }
+
+        let lastCommand = p[p.length - 1];
+        let command = {
+          where: null,
+          limit: null,
+          orderBy: [],
+          groupBy: [],
+          aggregate: []
+        };
+        p.push(command);
+
+        if (
+          lastCommand && (
+            !lastCommand[composerCommand.type] ||
+            lastCommand[composerCommand.type] instanceof Array
+          )
+        ) {
+
+          command = lastCommand;
+          p.pop();
+
+        }
+
+        if (command[composerCommand.type] instanceof Array) {
+
+          command[composerCommand.type].push(
+            Object.keys(composerCommand.data).reduce((p, c) => {
+              return (p[c] = composerCommand.data[c], p);
+            }, {})
+          );
 
         } else {
 
@@ -216,14 +302,20 @@ module.exports = (function() {
 
     /**
     * Reduces an array of commands from query informtion to a SQL query
-    * @private
     * @param {Array} [commandArray]
     * @param {Array} [includeColumns=*] Which columns to include, includes all by default
     * @return {Object} Looks like {sql: [], params: []}
+    * @private
     */
     __reduceCommandsToQuery__(commandArray, includeColumns) {
 
+      let lastAggregate = null;
+
       return commandArray.reduce((prev, command, i) => {
+
+        if (command.aggregate.length && command.groupBy.length) {
+          lastAggregate = command.aggregate;
+        }
 
         let table = `t${i}`;
 
@@ -231,9 +323,16 @@ module.exports = (function() {
         let params = this.db.adapter.getParamsFromMultiFilter(multiFilter);
 
         let joins = null;
-        let columns = includeColumns || this.Model.columnNames();
+        let columns = includeColumns || lastAggregate || this.Model.columnNames();
 
-        let orderBy = command.orderBy ? [command.orderBy] : []
+        columns = columns
+          .map(c => typeof c !== 'string' ? c : {columnNames: [c], alias: c, transformation: v => v})
+          .map(c => Object.keys(c).reduce((p, k) => { return (p[k] = c[k], p); }, {}));
+
+        !command.groupBy.length && columns.forEach(c => {
+          c.transformation = v => v;
+          c.columnNames = [c.alias];
+        });
 
         return {
           sql: this.db.adapter.generateSelectQuery(
@@ -242,7 +341,8 @@ module.exports = (function() {
             columns,
             multiFilter,
             joins,
-            orderBy,
+            command.groupBy,
+            command.orderBy,
             command.limit,
             prev.params.length
           ),
@@ -255,29 +355,32 @@ module.exports = (function() {
 
     /**
     * Retrieve all joined column data for a given join
-    * @private
     * @param {string} joinName The name of the join relationship
+    * @private
     */
     __joinedColumns__(joinName) {
-      let joinsObject = this.Model.joinInformation(joinName);
-      return joinsObject.Model.columnNames().map(columnName => {
+      let relationship = this.Model.relationships().findExplicit(joinName);
+      return relationship.getModel().columnNames().map(columnName => {
         return {
           name: joinName,
-          table: joinsObject.Model.table(),
-          columnName: columnName,
-          alias: `${(joinsObject.child && joinsObject.multiple) ? '$$' : '$'}${joinName}\$${columnName}`
+          table: relationship.getModel().table(),
+          columnNames: [columnName],
+          alias: `\$${joinName}\$${columnName}`,
+          transformation: v => v
         };
       });
     }
 
     /**
     * Generate a SQL query and its associated parameters from the current composer instance
-    * @private
     * @param {Array} [includeColumns=*] Which columns to include, includes all by default
     * @param {boolean} [disableJoins=false] Disable joins if you just want a subset of data
     * @return {Object} Has "params" and "sql" properties.
+    * @private
     */
     __generateQuery__(includeColumns, disableJoins) {
+
+      disableJoins = disableJoins || this.__isGrouped__();
 
       let queryInfo = this.__reduceToQueryInformation__(this.__collapse__());
       let query = this.__reduceCommandsToQuery__(queryInfo.commands, includeColumns);
@@ -288,7 +391,23 @@ module.exports = (function() {
         includeColumns
       );
 
-    };
+    }
+
+    /**
+    * Generate a SQL count query
+    * @param {Array} [includeColumns=*] Which columns to include, includes all by default
+    * @param {boolean} [disableJoins=false] Disable joins if you just want a subset of data
+    * @return {Object} Has "params" and "sql" properties.
+    * @private
+    */
+    __generateCountQuery__() {
+
+      let queryInfo = this.__reduceToQueryInformation__(this.__removeLastLimitCommand__(this.__collapse__()));
+      let query = this.__reduceCommandsToQuery__(queryInfo.commands);
+      query.sql = this.db.adapter.generateCountQuery(query.sql, 'c');
+      return query;
+
+    }
 
     /**
     * Add Joins to a query from queryInfo
@@ -296,20 +415,39 @@ module.exports = (function() {
     * @param {Object} queryInfo Must be format {commands: [], joins: []}
     * @param {Array} [includeColumns=*] Which columns to include, includes all by default
     * @return {Object} Has "params" and "sql" properties.
+    * @private
     */
     __addJoinsToQuery__(query, queryInfo, includeColumns) {
 
       let columns = includeColumns || this.Model.columnNames();
 
-      queryInfo.joins.forEach(j => {
-        columns = columns.concat(this.__joinedColumns__(j.name));
+      let joins = queryInfo.joins;
+
+      Object.keys(joins).forEach(joinName => {
+        joins[joinName].forEach(j => {
+          columns = columns.concat(this.__joinedColumns__(j.joinAlias));
+        });
       });
 
-      // We make sure we order by the orders... in reverse order
+      joins = Object.keys(joins).map(k => joins[k]);
+      let params = query.params.slice();
+
+      joins.forEach(join => {
+
+        join.forEach(j => {
+          params = params.concat(this.db.adapter.getParamsFromMultiFilter(j.multiFilter));
+        });
+
+      });
+
+      // Order by the orders... in reverse order
       let orderBy = queryInfo.commands.reduce((arr, command) => {
-        command.orderBy && arr.unshift(command.orderBy);
+        command.orderBy && (arr = command.orderBy.concat(arr));
         return arr;
       }, []);
+
+      // When doing joins, we count paramOffset as the last where parameter length
+      // Because we add in a bunch of parameters at the end.
 
       return {
         sql: this.db.adapter.generateSelectQuery(
@@ -317,63 +455,71 @@ module.exports = (function() {
           'j',
           columns,
           null,
-          queryInfo.joins,
+          joins,
+          null,
           orderBy,
           null,
           query.params.length
         ),
-        params: query.params
+        params: params
       };
 
     }
 
     /**
     * When using Composer#where, format all provided comparisons
-    * @private
     * @param {Object} comparisons Comparisons object. {age__lte: 27}, for example.
+    * @param {Nodal.Model} Model the model to use as the basis for comparison. Default to current model.
     * @return {Array}
+    * @private
     */
-    __parseComparisons__(comparisons) {
+    __parseComparisons__(comparisons, Model) {
+
+      Model = Model || this.Model;
 
       let comparators = this.db.adapter.comparators;
-      let columnLookup = this.Model.columnLookup();
+      let columnLookup = Model.columnLookup();
 
       return Object.keys(comparisons)
         .map(comparison => {
 
           let column = comparison.split('__');
-          let rel = this.Model.joinInformation(column[0]);
+          let rel = null;
+          let joinName;
+
+          let comparator = column.pop();
+          if (!comparators[comparator]) {
+            column.push(comparator);
+            comparator = 'is';
+          }
+
+          if (column.length > 1) {
+            joinName = column.slice(0, column.length - 1).join('__');
+            rel = Model.relationship(joinName);
+            column = column.slice(column.length - 1);
+          }
 
           let table = null;
-          let via = null;
-          let child = null;
           let joined = false;
+          let joins = null;
 
           if (rel) {
 
-            let joinName = column.shift();
-
             // if it's not found, return null...
-            if (!rel.Model.hasColumn(column[0])) {
+            if (!rel.getModel().hasColumn(column[0])) {
               return null;
             }
 
-            table = rel.Model.table();
-            child = rel.child;
-            via = rel.via;
+            table = rel.getModel().table();
             joined = true;
+            joins = rel.joins('w');
 
           }
 
-          let comparator = column.length > 1 ? column.pop() : 'is';
-          let columnName = column.join('__');
+          let columnName = column[0];
 
           // block out bad column names
-          if (!rel && !this.Model.hasColumn(columnName)) {
-            return null;
-          }
-
-          if (!comparators[comparator]) {
+          if (!rel && !Model.hasColumn(columnName)) {
             return null;
           }
 
@@ -383,14 +529,100 @@ module.exports = (function() {
             comparator: comparator,
             value: comparisons[comparison],
             joined: joined,
-            via: via,
-            child: child
+            joins: joins
           };
 
         })
         .filter(v => {
           return !!v;
         });
+
+    }
+
+    __filterHidden__(Model, comparisonsArray) {
+
+      comparisonsArray = (comparisonsArray || []).filter(c => c);
+
+      let comparators = this.db.adapter.comparators;
+
+      return comparisonsArray.map(comparisons => {
+
+        Object.keys(comparisons).forEach(comparison => {
+
+          let cModel = Model;
+
+          let column = comparison.split('__');
+          let comparator = column.pop();
+          !comparators[comparator] && column.push(comparator);
+          let field = column.pop();
+          let relName = column.join('__');
+          if (relName) {
+            let rel = cModel.relationship(relName);
+            if (!rel) {
+              return;
+            }
+            cModel = rel.getModel();
+          }
+
+          if (cModel.isHidden(field)) {
+            delete comparisons[comparison];
+          }
+
+        });
+
+        if (Object.keys(comparisons).length === 0) {
+          return null;
+        }
+
+        return comparisons;
+
+      }).filter(comparisons => comparisons);
+
+    }
+
+    /**
+    * Add comparisons to SQL WHERE clause. Does not allow filtering if Model.hides() has been called.
+    * @param {Object} comparisons Comparisons object. {age__lte: 27}, for example.
+    * @return {Nodal.Composer} new Composer instance
+    */
+    safeWhere(comparisonsArray) {
+
+      if (!(comparisonsArray instanceof Array)) {
+        comparisonsArray = [].slice.call(arguments);
+      }
+
+      return this.where(
+        this.__filterHidden__(
+          this.Model,
+          comparisonsArray
+        )
+      );
+
+    }
+
+    /**
+    * Join in a relationship. Filters out hidden fields from comparisons.
+    * @param {string} joinName The name of the joined relationship
+    * @param {array} comparisonsArray comparisons to perform on this join (can be overloaded)
+    */
+    safeJoin(joinName, comparisonsArray) {
+
+      if (!(comparisonsArray instanceof Array)) {
+        comparisonsArray = [].slice.call(arguments, 1);
+      }
+
+      let relationship = this.Model.relationship(joinName);
+      if (!relationship) {
+        return this;
+      }
+
+      return this.join(
+        joinName,
+        this.__filterHidden__(
+          relationship.getModel(),
+          comparisonsArray
+        )
+      );
 
     }
 
@@ -432,7 +664,7 @@ module.exports = (function() {
       if (order || offset || count) {
         let composer = this;
         order && (composer = composer.orderBy(order[0], order[1]));
-        count && (composer = composer.limit(offset || 0, count || 0));
+        (offset || count) && (composer = composer.limit(offset || 0, count || 0));
         return composer.where(comparisonsArray);
       }
 
@@ -440,7 +672,7 @@ module.exports = (function() {
         type: 'where',
         data: {
           comparisons: comparisonsArray
-          .map(this.__parseComparisons__.bind(this))
+          .map(comparisons => this.__parseComparisons__(comparisons))
           .filter(f => f.length)
         }
       };
@@ -455,22 +687,31 @@ module.exports = (function() {
     * @param {string} direction Must be 'ASC' or 'DESC'
     * @return {Nodal.Composer} new Composer instance
     */
-    orderBy(field, direction, formatFunc) {
+    orderBy(field, direction) {
 
-      if (!this.Model.hasColumn(field)) {
-        throw new Error(`Cannot order by ${field}, it does not belong to ${this.Model.name}`);
+      let transformation;
+      let fields = [];
+
+      if (typeof field === 'function') {
+        fields = utilities.getFunctionParameters(field);
+        transformation = field;
+      } else {
+        fields = [field];
+        transformation = v => `${v}`;
       }
 
-      if (typeof formatFunc !== 'function') {
-        formatFunc = null;
-      }
+      fields.forEach(field => {
+        if (!this.Model.hasColumn(field)) {
+          throw new Error(`Cannot order by ${field}, it does not belong to ${this.Model.name}`);
+        }
+      });
 
       this._command = {
         type: 'orderBy',
         data: {
-          columnName: field,
-          direction: ({'asc': 'ASC', 'desc': 'DESC'}[(direction + '').toLowerCase()] || 'ASC'),
-          format: formatFunc
+          columnNames: fields,
+          transformation: transformation,
+          direction: ({'asc': 'ASC', 'desc': 'DESC'}[(direction + '').toLowerCase()] || 'ASC')
         }
       };
 
@@ -511,13 +752,19 @@ module.exports = (function() {
     }
 
     /**
-    * Join in a relationship. Must have Model.joinsTo() set from a child, or set to a parent
+    * Join in a relationship.
     * @param {string} joinName The name of the joined relationship
+    * @param {array} comparisonsArray comparisons to perform on this join (can be overloaded)
     */
-    join(joinName) {
+    join(joinName, comparisonsArray) {
 
-      if (!this.Model.hasJoin(joinName)) {
-        throw new Error(`Model ${this.Model.name} does not have relationship ${joinName}`);
+      if (!(comparisonsArray instanceof Array)) {
+        comparisonsArray = [].slice.call(arguments, 1);
+      }
+
+      let relationship = this.Model.relationships().findExplicit(joinName);
+      if (!relationship) {
+        throw new Error(`Model ${this.Model.name} does not have relationship "${joinName}".`);
       }
 
       let composer = this;
@@ -528,15 +775,79 @@ module.exports = (function() {
         composer = composer._parent;
       }
 
-      let joinsObject = this.Model.joinInformation(joinName);
+      let joinData = relationship.joins();
+      joinData[joinData.length - 1].joinAlias = joinName;
+      joinData[joinData.length - 1].prevAlias = joinName.split('__').slice(0, -1).join('__');
+      joinData[joinData.length - 1].multiFilter = this.db.adapter.createMultiFilter(
+        joinName,
+        comparisonsArray
+          .map(comparisons => this.__parseComparisons__(comparisons, relationship.getModel()))
+          .filter(f => f.length)
+      );
 
       this._command = {
         type: 'join',
         data: {
           name: joinName,
-          table: joinsObject.Model.table(),
-          field: joinsObject.child ? joinsObject.via : 'id',
-          baseField: joinsObject.child ? 'id' : joinsObject.via
+          joinData: joinData
+        }
+      };
+
+      return new Composer(this.Model, this);
+
+    }
+
+    /**
+    * Groups by a specific field, or a transformation on a field
+    * @param {String} column The column to group by
+    */
+    groupBy(column) {
+
+      let columns;
+      let transformation;
+
+      if (typeof column === 'function') {
+        columns = utilities.getFunctionParameters(column);
+        transformation = column;
+      } else {
+        columns = [column]
+        transformation = v => `${v}`;
+      }
+
+      this._command = {
+        type: 'groupBy',
+        data: {
+          columnNames: columns,
+          transformation: transformation
+        }
+      };
+
+      return new Composer(this.Model, this).aggregate(column);
+
+    }
+
+    /**
+    * Aggregates a field
+    * @param {String} alias The alias for the new aggregate field
+    * @param {Function} transformation The transformation to apply to create the aggregate
+    */
+    aggregate(alias, transformation) {
+
+      let columns;
+
+      if (typeof transformation === 'function') {
+        columns = utilities.getFunctionParameters(transformation);
+      } else {
+        columns = [alias]
+        transformation = v => v;
+      }
+
+      this._command = {
+        type: 'aggregate',
+        data: {
+          alias: alias,
+          columnNames: columns,
+          transformation: transformation
         }
       };
 
@@ -551,13 +862,50 @@ module.exports = (function() {
     end(callback) {
 
       let query = this.__generateQuery__();
+      let countQuery = this.__generateCountQuery__();
 
-      return this.db.query(query.sql, query.params, (err, result) => {
+      let grouped = this.__isGrouped__();
 
-        let rows = result ? (result.rows || []).slice() : [];
-        let models = this.__parseModelsFromRows__(rows);
+      let limitCommand = this.__getLastLimitCommand__(this.__collapse__());
+      let offset = limitCommand ? limitCommand._command.data.offset : 0;
+      let total = 0;
 
-        callback.call(this, err, models);
+      this.db.query(countQuery.sql, countQuery.params, (err, result) => {
+
+        let total = (((result && result.rows) || [])[0] || {}).__total__ || 0;
+
+        if (!total) {
+          let models = this.__parseModelsFromRows__([], grouped);
+          models.setMeta({offset: offset, total: total});
+          return callback.call(this, err, models);
+        }
+
+        this.db.query(query.sql, query.params, (err, result) => {
+
+          let rows = result ? (result.rows || []).slice() : [];
+          let models = this.__parseModelsFromRows__(rows, grouped);
+          models.setMeta({offset: offset, total: total});
+          callback.call(this, err, models);
+
+        });
+
+      });
+
+    }
+
+    /**
+    * Shortcut for .limit(1).end(callback) that only returns a model object or error if not found
+    * @param {Function} callback Callback to execute, provides an error and model parameter
+    */
+    first(callback) {
+
+      return this.limit(1).end((err, models) => {
+
+        if (!err && !models.length) {
+          err = new Error(`No records for ${this.Model.name} found in your query`);
+        }
+
+        callback(err, models[0]);
 
       });
 
@@ -569,6 +917,10 @@ module.exports = (function() {
     * @param {function({Error}, {Nodal.ModelArray})} callback The callback for the update query
     */
     update(fields, callback) {
+
+      if (this.__isGrouped__()) {
+        throw new Error('Cannot update grouped queries');
+      }
 
       let query = this.__generateQuery__(['id'], true);
       let columns = Object.keys(fields);

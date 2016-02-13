@@ -3,11 +3,12 @@ module.exports = (function() {
   'use strict';
 
   const Model = require('./model.js');
+  const ItemArray = require('./item_array.js');
   const ModelArray = require('./model_array.js');
 
   class APIConstructor {
 
-    format(obj, arrInterface, options, useResource) {
+    format(obj, arrInterface, useResource) {
 
       if (obj instanceof Error) {
         return this.error(obj.message, obj.details);
@@ -15,15 +16,16 @@ module.exports = (function() {
 
       if (obj instanceof Model) {
         let modelArray = new ModelArray(obj.constructor);
+        modelArray.setMeta({total: 1, offset: 0});
         modelArray.push(obj);
         obj = modelArray;
       }
 
-      if (!(obj instanceof ModelArray)) {
+      if (!(obj instanceof ItemArray)) {
         return this.spoof(obj);
       }
 
-      return this.response(obj, arrInterface, options);
+      return this.response(obj, arrInterface);
 
     }
 
@@ -59,7 +61,7 @@ module.exports = (function() {
 
     }
 
-    spoof(obj, options, useResource) {
+    spoof(obj, useResource) {
 
       if (!(obj instanceof Array)) {
         obj = [obj];
@@ -79,18 +81,18 @@ module.exports = (function() {
 
     }
 
-    response(modelArray, arrInterface, options, useResource) {
+    response(itemArray, arrInterface, useResource) {
 
       return {
         meta: this.meta(
-          modelArray.length,
-          modelArray.length,
-          0,
+          itemArray._meta.total,
+          itemArray.length,
+          itemArray._meta.offset,
           null,
           null,
-          useResource && this.resourceFromModelArray(modelArray, arrInterface, options)
+          useResource && this.resourceFromModelArray(itemArray, arrInterface)
         ),
-        data: modelArray.toObject(arrInterface, options)
+        data: itemArray.toObject(arrInterface)
       }
 
     }

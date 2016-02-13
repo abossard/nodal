@@ -66,11 +66,7 @@ module.exports = (function() {
         }
       });
 
-      if (Object.keys(newProperties).length) {
-        columnData.properties = newProperties;
-      } else {
-        delete columnData.properties;
-      }
+      columnData.properties = newProperties;
 
       return columnData;
 
@@ -123,6 +119,10 @@ module.exports = (function() {
 
       if (columns.indexOf('created_at') === -1) {
         arrColumnData.push({name:'created_at', type: 'datetime'});
+      }
+
+      if (columns.indexOf('updated_at') === -1) {
+        arrColumnData.push({name:'updated_at', type: 'datetime'});
       }
 
       let defaults = this.db.adapter.typePropertyDefaults;
@@ -300,7 +300,7 @@ module.exports = (function() {
       if (this.indices.filter(function(v) {
         return v.table === table && v.column === column;
       }).length) {
-        throw new Error('Index already exists on column "' + column + '" of table "' + table + '"');
+        throw new Error(`Index already exists on column "${column}" of table "${table}"`);
       }
 
       this.indices.push({table: table, column: column, type: type});

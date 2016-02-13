@@ -2,11 +2,15 @@ module.exports = (function() {
 
   'use strict';
 
+  const async = require('async');
+
+  const ItemArray = require('./item_array.js');
+
   /**
   * Array of Models, for easy conversion to Objects
   * @class
   */
-  class ModelArray extends Array {
+  class ModelArray extends ItemArray {
 
     /**
     * Create the ModelArray with a provided Model to use as a reference.
@@ -15,7 +19,7 @@ module.exports = (function() {
     constructor(modelConstructor) {
 
       super();
-      this._modelConstructor = modelConstructor;
+      this.Model = modelConstructor;
 
     }
 
@@ -39,19 +43,19 @@ module.exports = (function() {
     /**
     * Creates an Array of plain objects from the ModelArray, with properties matching an optional interface
     * @param {Array} arrInterface Interface to use for object creation for each model
-    * @param {Object} opts Options for the object conversion
     */
-    toObject(arrInterface, opts, maxDepth, depth) {
-
-      maxDepth = maxDepth || 1;
-      depth = depth || 0;
-
-      if (depth > maxDepth) {
-        return;
-      }
+    toObject(arrInterface) {
 
       return this.map(m => m.toObject(arrInterface));
 
+    }
+
+    /**
+    * Checks if ModelArray has a model in it
+    * @param {Nodal.Model} model
+    */
+    has(model) {
+      return this.filter(m => m.get('id') === model.get('id')).length > 0;
     }
 
     /**
@@ -73,8 +77,80 @@ module.exports = (function() {
     }
 
     /**
-    * Saves / updates all models in the ModelArray. Will return an error and rollback if *any* model errors out.
-    * @param {function({Error}, {ModelArray})} callback returning the error or saved ModelArray
+    * Destroys (deletes) all models in the ModelArray from the database
+    * @param {function} callback Method to invoke upon completion
+    */
+    destroyAll(callback) {
+
+      if (this.filter(m => !m.inStorage()).length) {
+        return callback(new Error('Not all models are in storage'))
+      }
+
+      let db = this.Model.prototype.db;
+
+      let params = this.map(m => m.get('id'));
+      let sql = db.adapter.generateDeleteAllQuery(this.Model.table(), 'id', params);
+
+      db.query(
+        sql,
+        params,
+        (err, result) => {
+
+          if (err) {
+            return callback.call(this, new Error(err.message));
+          }
+
+          this.forEach(m => m._inStorage = false);
+
+          callback.call(this, null);
+
+        }
+      );
+
+    }
+
+    /**
+    * Destroys model and cascades all deletes.
+    * @param {function} callback method to run upon completion
+    */
+    destroyCascade(callback) {
+
+      let db = this.Model.prototype.db;
+
+      if (this.filter(m => !m.inStorage()).length) {
+        return callback(new Error('Not all models are in storage'))
+      }
+
+      let params = this.map(m => m.get('id'));
+      let txn = [[db.adapter.generateDeleteAllQuery(this.Model.table(), 'id', params), params]];
+
+      let children = this.Model.relationships().cascade();
+      txn = txn.concat(
+        children.map(p => {
+          return [db.adapter.generateDeleteAllQuery(p.getModel().table(), 'id', params, p.joins(null, this.Model.table())), params];
+        })
+      ).reverse();
+
+      db.transaction(
+        txn,
+        (err, result) => {
+
+          if (err) {
+            return callback(err);
+          }
+
+          this.forEach(m => m._inStorage = false);
+
+          callback(null);
+
+        }
+      );
+
+    }
+
+    /**
+    * Saves / updates all models in the ModelArray. Uses beforeSave / afterSave. Will return an error and rollback if *any* model errors out.
+    * @param {function} callback returning the error and reference to self
     */
     saveAll(callback) {
 
@@ -82,12 +158,42 @@ module.exports = (function() {
         return callback.call(this, null, this);
       }
 
+      async.series(
+        this.map(m => m.beforeSave.bind(m)),
+        err => {
+
+          if (err) {
+            return callback(err);
+          }
+
+          this.__saveAll__(err => {
+
+            async.series(
+              this.map(m => m.afterSave.bind(m)),
+              err => callback(err || null, this)
+            );
+
+          });
+
+        }
+      );
+
+    }
+
+    /**
+    * save all models (outside of beforeSave / afterSave)
+    * @param {function} callback Called with error, if applicable
+    * @private
+    */
+    __saveAll__(callback) {
+
       let firstErrorModel = this.filter(m => m.hasErrors()).shift();
+
       if (firstErrorModel) {
-        return callback.call(this, firstErrorModel.errorObject(), this);
+        return callback.call(this, firstErrorModel.errorObject());
       }
 
-      let db = this._modelConstructor.prototype.db;
+      let db = this.Model.prototype.db;
 
       db.transaction(
         this.map(m => {
@@ -97,14 +203,14 @@ module.exports = (function() {
         (err, result) => {
 
           if (err) {
-            return callback.call(this, new Error(err.message), this);
+            return callback.call(this, new Error(err.message));
           }
 
           this.forEach((m, i) => {
             m.__load__(result[i].rows[0], true);
-            Object.keys(m._joinsCache).forEach(field => m.setJoinedId(field));
           });
-          callback.call(this, null, this);
+
+          callback.call(this, null);
 
         }
       )

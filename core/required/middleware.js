@@ -16,10 +16,10 @@ module.exports = (function() {
     * @param {string|Buffer} data The data about the be rendered
     * @param {function({Error} err, {string|Buffer} data)} callback the callback to be run upon completion
     */
-    exec(controller, data, callback) {
+    exec(controller, callback) {
 
       let err = null;
-      return callback(err, data);
+      return callback(err);
 
     }
 

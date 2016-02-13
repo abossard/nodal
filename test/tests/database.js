@@ -13,7 +13,8 @@ module.exports = (function(Nodal) {
         {name: 'id', type: 'serial'},
         {name: 'test', type: 'string'},
         {name: 'created_at', type: 'datetime'},
-        {name: 'reference_id', type: 'int'}
+        {name: 'reference_id', type: 'int'},
+        {name: 'updated_at', type: 'datetime'}
       ]
     };
 
@@ -22,10 +23,22 @@ module.exports = (function(Nodal) {
       columns: [
         {name: 'id', type: 'serial'},
         {name: 'test', type: 'string'},
-        {name: 'created_at', type: 'datetime'}
+        {name: 'created_at', type: 'datetime'},
+        {name: 'updated_at', type: 'datetime'}
       ]
     };
 
+
+    let myTableWithJson = {
+      table: 'json_reference',
+      columns: [
+        {name: 'id', type: 'serial'},
+        {name: 'test', type: 'string'},
+        {name: 'content', type: 'json'},
+        {name: 'created_at', type: 'datetime'},
+        {name: 'updated_at', type: 'datetime'}
+      ]
+    };
 
 
     after(function(done) {
@@ -112,7 +125,9 @@ module.exports = (function(Nodal) {
         db.transaction(
           [
             db.adapter.generateCreateTableQuery(myTable.table, myTable.columns),
-            db.adapter.generateCreateTableQuery(myReferenceTable.table, myReferenceTable.columns)
+            db.adapter.generateCreateTableQuery(myReferenceTable.table, myReferenceTable.columns),
+            db.adapter.generateCreateTableQuery(myTableWithJson.table, myTableWithJson.columns)
+
           ].join(';'),
           function(err, result) {
             expect(err).to.equal(null);

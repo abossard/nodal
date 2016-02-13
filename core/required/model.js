@@ -11,6 +11,10 @@ module.exports = (function() {
   const utilities = require('./utilities.js');
   const async = require('async');
   const inflect = require('i')();
+  const deepEqual = require('deep-equal');
+
+  const RelationshipGraph = require('./relationship_graph.js');
+  const Relationships = new RelationshipGraph();
 
   /**
   * Basic Model implementation. Optionally interfaces with database.
@@ -133,7 +137,7 @@ module.exports = (function() {
     */
     static table() {
       return this.prototype.schema.table;
-    };
+    }
 
     /**
     * Get the model's column data
@@ -179,26 +183,10 @@ module.exports = (function() {
     }
 
     /**
-    * Check if the model has a relationship with a given name
-    * @param {string} name
-    */
-    static hasJoin(name) {
-      return !!this.joinInformation(name);
-    }
-
-    /**
-    * Retrieve join information based on the provided name
-    * @param {string} name Relationship name
-    * @return {Object}
-    */
-    static joinInformation(name) {
-      return this.prototype._joins[name];
-    }
-
-    /**
     * Get resource data for a model, for API responses and debug information
     * @param {Array} arrInterface Array of strings representing output columns, or singularly-keyed objects representing relationships and their interface.
     * @return {Object} Resource object for the model
+    * @deprecated
     */
     static toResource(arrInterface) {
 
@@ -298,66 +286,46 @@ module.exports = (function() {
     }
 
     /**
+    * FIXME
+    */
+    static relationships() {
+
+      return Relationships.of(this);
+
+    }
+
+    /**
+    * FIXME
+    */
+    static relationship(name) {
+
+      this._relationshipCache = this._relationshipCache || {};
+      this._relationshipCache[name] = (this._relationshipCache[name] || this.relationships().findExplicit(name));
+      return this._relationshipCache[name];
+
+    }
+
+    /**
     * Sets a joins relationship for the Model. Sets joinedBy relationship for parent.
-    * @param {class Nodal.Model} modelConstructor The Model which your current model belongs to
-    * @param {optional Object} options
+    * @param {class Nodal.Model} Model The Model class which your current model belongs to
+    * @param {Object} [options={}]
     *   "name": The string name of the parent in the relationship (default to camelCase of Model name)
     *   "via": Which field in current model represents this relationship, defaults to `${name}_id`
     *   "as": What to display the name of the child as when joined to the parent (default to camelCase of child name)
+    *   "multiple": Whether the child exists in multiples for the parent (defaults to false)
     */
-    static joinsTo(modelConstructor, options) {
+    static joinsTo(Model, options) {
 
-      if (!this.prototype.hasOwnProperty('_joins')) {
-        this.prototype._joins = {};
-        this.prototype._joinsList = [];
-      };
+      return this.relationships().joinsTo(Model, options);
 
-      options = options || {};
+    }
 
-      options.name = options.name || inflect.camelize(modelConstructor.name, false);
-      options.via = options.via || `${inflect.underscore(options.name)}_id`;
-      options.multiple = !!options.multiple;
+    /**
+    * Specifies joinsTo for the child model
+    */
+    static joinedBy(Model, options) {
 
-      if (!options.as) {
-
-        options.as = inflect.camelize(this.name, false);
-
-        if (options.multiple) {
-          options.as = inflect.pluralize(options.as);
-        }
-
-      }
-
-      if (this.prototype._joins[options.name]) {
-        throw new Error(`Join relationship already exists for "${options.name}" on "${this.name}".`);
-      }
-
-      this.prototype._joins[options.name] = {
-        Model: modelConstructor,
-        child: false,
-        via: options.via,
-        multiple: options.multiple
-      };
-
-      this.prototype._joinsList.push(options.name);
-
-      if (!modelConstructor.prototype.hasOwnProperty('_joins')) {
-        modelConstructor.prototype._joins = {};
-        modelConstructor.prototype._joinsList = [];
-      };
-
-      if (modelConstructor.prototype._joins[options.as]) {
-        throw new Error(`Join relationship already exists for "${options.as}" on "${modelConstructor.name}".`);
-      }
-
-      modelConstructor.prototype._joins[options.as] = {
-        Model: this,
-        child: true,
-        via: options.via,
-        multiple: options.multiple
-      };
-
-      modelConstructor.prototype._joinsList.push(options.as);
+      return Model.joinsTo && Model.joinsTo(this, options);
 
     }
 
@@ -424,13 +392,36 @@ module.exports = (function() {
     }
 
     /**
+    * Hides fields from being output in .toObject() (i.e. API responses), even if asked for
+    * @param {String} field
+    */
+    static hides(field) {
+
+      this.prototype._hides[field] = true;
+      return true;
+
+    }
+
+    /**
+    * Tells us if a field is hidden (i.e. from API queries)
+    * @param {String} field
+    */
+    static isHidden(field) {
+
+      return this.prototype._hides[field] || false;
+
+    }
+
+    /**
     * Prepare model for use
     * @private
     */
     __initialize__() {
 
+      this._relationshipCache = {};
+
       this._joinsCache = {};
-      this._joinedByCache = {};
+      this._joinsList = [];
 
       this._data = Object.create(this._data); // Inherit from prototype
       this._changed = Object.create(this._changed); // Inherit from prototype
@@ -452,6 +443,7 @@ module.exports = (function() {
 
       if (!fromStorage) {
         data.created_at = new Date();
+        data.updated_at = new Date();
       }
 
       let keys = Object.keys(data);
@@ -506,7 +498,7 @@ module.exports = (function() {
     */
     __safeSet__(field, value) {
 
-      if (this._joins[field]) {
+      if (this.relationship(field)) {
 
         return this.setJoined(field, value);
 
@@ -632,17 +624,19 @@ module.exports = (function() {
     }
 
     /**
+    * Grabs the path of the given relationship from the RelationshipGraph
+    * @param {string} name the name of the relationship
+    */
+    relationship(name) {
+      return this.constructor.relationship(name);
+    }
+
+    /**
     * Sets specified field data for the model. Logs and validates the change.
     * @param {string} field Field to set
     * @param {any} value Value for the field
     */
     set(field, value) {
-
-      if (this._joins[field]) {
-
-        return this.setJoined(field, value);
-
-      }
 
       if (!this.hasField(field)) {
 
@@ -673,8 +667,15 @@ module.exports = (function() {
               break;
             }
           }
-
         }
+
+        // If we have an object value (json), do a deterministic diff using
+        // node-deep-equals
+        // NOTE: Lets do an extra deep object test
+        if ( utilities.isObject(value) ) {
+          changed = !deepEqual( curValue, value, { strict: true});
+        }
+
       }
 
       this._data[field] = value;
@@ -692,59 +693,33 @@ module.exports = (function() {
     */
     setJoined(field, value) {
 
-      let joinsObject = this._joins[field];
+      let relationship = this.relationship(field);
 
-      if (
-        (!joinsObject.child || (joinsObject.child && !joinsObject.multiple)) &&
-        !(value instanceof joinsObject.Model)
-      ) {
+      if (!relationship.multiple()) {
 
-        throw new Error(`${value} is not an instance of ${joinsObject.Model.name}`);
+        if (!(value instanceof relationship.getModel())) {
 
-      } else if (
-        joinsObject.child && joinsObject.multiple &&
-        (!(value instanceof ModelArray) || (value._modelConstructor !== joinsObject.Model))
-      ) {
+          throw new Error(`${value} is not an instance of ${relationship.getModel().name}`);
 
-        throw new Error(`${value} is not an instanceof ModelArray[${joinsObject.Model.name}]`);
+        }
 
+      } else {
+
+        if (!(value instanceof ModelArray) && ModelArray.Model !== relationship.getModel()) {
+
+          throw new Error(`${value} is not an instanceof ModelArray[${relationship.getModel().name}]`);
+
+        }
+
+      }
+
+      if (!this._joinsCache[field]) {
+        this._joinsList.push(field);
       }
 
       this._joinsCache[field] = value;
 
-      return this.setJoinedId(field);
-
-    }
-
-    /**
-    * Sets appropriate id field for joined models
-    * @param {string} field The field (name of the join relationship)
-    * @param {Model|ModelArray} value The joined model or array of models
-    */
-    setJoinedId(field) {
-
-      let joinsObject = this._joins[field];
-      let joinedModel = this._joinsCache[field];
-
-      if (!joinedModel) {
-        throw new Error('${field} cannot have its joined id set, is not currently added to model.');
-      }
-
-      if (joinsObject.child && this.inStorage()) {
-
-        if (joinsObject.multiple) {
-          joinedModel.forEach(model => model.set(joinsObject.via, this.get('id')));
-        } else {
-          joinedModel.set(joinsObject.via, this.get('id'));
-        }
-
-      } else if (!joinsObject.child && joinedModel.inStorage()) {
-
-        this.set(joinsObject.via, joinedModel.get('id'));
-
-      }
-
-      return joinedModel;
+      return value;
 
     }
 
@@ -770,12 +745,18 @@ module.exports = (function() {
         return this.calculate(field);
       }
 
-      if (this._joinsCache[field]) {
-        return this._joinsCache[field];
-      }
-
       let datum = this._data[field];
       return (!ignoreFormat && this.formatters[field]) ? this.formatters[field](datum) : datum;
+
+    }
+
+    /**
+    * Retrieves joined Model or ModelArray
+    * @param {String} joinName the name of the join (list of connectors separated by __)
+    */
+    joined(joinName) {
+
+      return this._joinsCache[joinName];
 
     }
 
@@ -802,39 +783,34 @@ module.exports = (function() {
         throw new Error('No valid relationships (1st parameter is error)');
       }
 
-      let invalidJoinNames = joinNames.filter(r => !this._joins[r]);
+      let invalidJoinNames = joinNames.filter(r => !this.relationship(r));
 
       if (invalidJoinNames.length) {
         throw new Error(`Joins "${invalidJoinNames.join('", "')}" for model "${this.constructor.name}" do not exist.`);
       }
 
-      let fns = joinNames.map(r => this._joins[r]).map(r => {
-        return (callback) => {
+      let query = this.constructor.query().where({id: this.get('id')});
 
-          if (r.child) {
+      joinNames.forEach(joinName => query = query.join(joinName));
 
-            let where = {};
-            where[r.via] = this.get('id');
-            r.Model.query()
-              .where(where)
-              .end((err, models) => callback(err, r.multiple ? models : models[0]));
+      query.end((err, models) => {
 
-          } else {
-
-            r.Model.find(this.get(r.via), callback);
-
-          }
-
+        if (err) {
+          return callback(err);
         }
-      });
 
-      async.parallel(fns, (err, results) => {
+        if (!models || !models.length) {
+          return callback(new Error('Could not fetch parent'));
+        }
 
-        joinNames.forEach((r, i) => {
-          this.set(r, results[i]);
+        let model = models[0];
+        let joins = joinNames.map(joinName => {
+          let join = model.joined(joinName);
+          join && this.setJoined(joinName, join);
+          return join;
         });
 
-        return callback.apply(this, [err || null].concat(results));
+        return callback.apply(this, [null].concat(joins));
 
       });
 
@@ -843,71 +819,38 @@ module.exports = (function() {
     /**
     * Creates a plain object from the Model, with properties matching an optional interface
     * @param {Array} arrInterface Interface to use for object creation
-    * @param {Object} opts Options like whether to exclude the fields. {exclude: true}
     */
-    toObject(arrInterface, opts, maxDepth, depth) {
-
-      maxDepth = maxDepth || 1;
-      depth = depth || 0;
-
-      if (depth > maxDepth) {
-        return;
-      }
+    toObject(arrInterface) {
 
       let obj = {};
-      opts = opts || {};
 
-      if (opts.exclude) {
+      arrInterface = arrInterface ||
+        this.fieldList()
+        .concat(this._calculationsList)
+        .filter(key => !this._hides[key]);
 
-        let excludeObjects = [];
-        let excludeLookup = arrInterface.reduce((o, key) => {
-          if (typeof key === 'object' && key !== null) {
-            excludeObjects.push(key);
-            key = Object.keys(key)[0];
-          }
-          o[key] = true;
-          return o;
-        }, {});
+      arrInterface.forEach(key => {
 
-        arrInterface = this.fieldList()
-          .concat(this._calculationsList)
-          .concat(this._joinsList)
-          .filter(key => !excludeLookup[key])
-          .concat(excludeObjects);
+        if (this._hides[key]) {
+          return;
+        }
 
-      }
+        let joinObject;
 
-      if (arrInterface) {
+        if (typeof key === 'object' && key !== null) {
+          let subInterface = key;
+          key = Object.keys(key)[0];
+          joinObject = this._joinsCache[key];
+          joinObject && (obj[key] = joinObject.toObject(subInterface[key]));
+        } else if (this._data[key] !== undefined) {
+          obj[key] = this._data[key];
+        } else if (this._calculations[key] !== undefined) {
+          obj[key] = this.calculate(key);
+        } else if (joinObject = this._joinsCache[key]) {
+          obj[key] = joinObject.toObject();
+        }
 
-        arrInterface.forEach(key => {
-
-          let joinObject;
-
-          if (typeof key === 'object' && key !== null) {
-            let subInterface = key;
-            key = Object.keys(key)[0];
-            joinObject = this._joinsCache[key] || this._joinedByCache[key];
-            joinObject && (obj[key] = joinObject.toObject(subInterface[key], opts, maxDepth, depth + 1));
-          } else if (this._data[key] !== undefined) {
-            obj[key] = this._data[key];
-          } else if (this._calculations[key] !== undefined) {
-            obj[key] = this.calculate(key);
-          } else if (joinObject = (this._joinsCache[key] || this._joinedByCache[key])) {
-            obj[key] = joinObject.toObject();
-          }
-
-        });
-
-      } else {
-
-        this.fieldList().forEach(key => obj[key] = this._data[key]);
-        this._calculationsList.forEach(key => obj[key] = this.calculate(key));
-        this._joinsList.forEach(key => {
-          let cacheValue = this._joinsCache[key] || this._joinedByCache[key];
-          cacheValue && (obj[key] = cacheValue.toObject(null, opts, maxDepth, depth + 1));
-        });
-
-      }
+      });
 
       return obj;
 
@@ -1041,11 +984,47 @@ module.exports = (function() {
     }
 
     /**
-    * Saves model to database
-    * @param {function({Error} err, {Nodal.Model} model)} callback
-    *   Method to execute upon completion, returns error if failed (including validations didn't pass)
+    * Logic to execute before a model saves. Intended to be overwritten when inherited.
+    * @param {Function} callback Invoke with first argument as an error if failure.
+    */
+    beforeSave(callback) {
+
+      callback(null, this);
+
+    }
+
+    /**
+    * Logic to execute after a model saves. Intended to be overwritten when inherited.
+    * @param {Function} callback Invoke with first argument as an error if failure.
+    */
+    afterSave(callback) {
+
+      callback(null, this);
+
+    }
+
+    /**
+    * Save a model (execute beforeSave and afterSave)
+    * @param {Function} callback Callback to execute upon completion
     */
     save(callback) {
+
+      async.series([
+        this.beforeSave,
+        this.__save__,
+        this.afterSave
+      ].map(f => f.bind(this)), (err) => {
+        callback(err || null, this);
+      });
+
+    }
+
+    /**
+    * Saves model to database
+    * @param {function} callback Method to execute upon completion, returns error if failed (including validations didn't pass)
+    * @private
+    */
+    __save__(callback) {
 
       let db = this.db;
 
@@ -1060,8 +1039,12 @@ module.exports = (function() {
       }
 
       if (this.hasErrors()) {
-        callback.call(this, this.errorObject(), this);
+        callback.call(this, this.errorObject());
         return;
+      }
+
+      if (this.fieldList().indexOf('updated_at') !== -1) {
+        this.set('updated_at', new Date());
       }
 
       let query = this.__generateSaveQuery__();
@@ -1077,10 +1060,20 @@ module.exports = (function() {
             result.rows.length && this.__load__(result.rows[0], true);
           }
 
-          callback.call(this, this.errorObject(), this);
+          callback.call(this, this.errorObject());
 
         }
       );
+
+    }
+
+    /**
+    * Destroys model and cascades all deletes.
+    * @param {function} callback method to run upon completion
+    */
+    destroyCascade(callback) {
+
+      ModelArray.from([this]).destroyCascade(callback);
 
     }
 
@@ -1135,7 +1128,7 @@ module.exports = (function() {
             model._inStorage = false;
           }
 
-          callback.call(model, model.errorObject(), model);
+          callback.call(model, err, model);
 
         }
       );
@@ -1149,14 +1142,13 @@ module.exports = (function() {
     columns: []
   };
 
-  Model.prototype._joins = {};
-  Model.prototype._joinsList = [];
-
   Model.prototype._validations = {};
   Model.prototype._validationsList = [];
 
   Model.prototype._calculations = {};
   Model.prototype._calculationsList = [];
+
+  Model.prototype._hides = {};
 
   Model.prototype.formatters = {};
 
@@ -1166,12 +1158,14 @@ module.exports = (function() {
 
   Model.prototype.externalInterface = [
     'id',
-    'created_at'
+    'created_at',
+    'updated_at'
   ];
 
   Model.prototype.aggregateBy = {
     'id': 'count',
-    'created_at': 'min'
+    'created_at': 'min',
+    'updated_at': 'min'
   };
 
   return Model;

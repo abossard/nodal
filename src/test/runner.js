@@ -3,25 +3,31 @@ module.exports = (() => {
   'use strict';
 
   const Nodal = require('nodal');
-  Nodal.env = 'test';
+  const TestRunner = Nodal.mocha.TestRunner;
+  
+  const router = Nodal.require('app/router.js');
 
-  const daemon = new Nodal.Daemon('./app/app.js');
-  const TestRunner = new Nodal.TestRunner('./test/tests');
+  const tests = new TestRunner('./test/tests', router);
 
-  describe('My Application', () => {
+  return describe('My Application', () => {
 
-    before((done) => {
+    /* Uncomment for database support */
+    // before((done) => {
+    //
+    //   Nodal.my.bootstrapper.bootstrap((err) => {
+    //
+    //     if (err) {
+    //       console.error(err);
+    //       throw err;
+    //     }
+    //
+    //     done();
+    //
+    //   })
+    //
+    // });
 
-      daemon.start(app => {
-
-        TestRunner.ready(app);
-        done();
-
-      });
-
-    });
-
-    TestRunner.start(require('chai').expect);
+    tests.start(require('chai').expect);
 
   });
 

@@ -158,7 +158,7 @@ module.exports = (function() {
 
     }
 
-    generateSelectQuery(subQuery, table, columns, multiFilter, joinArray, orderObjArray, limitObj, paramOffset) {
+    generateSelectQuery(subQuery, table, columns, multiFilter, joinArray, groupByArray, orderByArray, limitObj, paramOffset) {
 
       let formatTableField = (table, column) => `${this.escapeField(table)}.${this.escapeField(column)}`;
 
@@ -168,35 +168,38 @@ module.exports = (function() {
         subQuery = subQuery ? `(${subQuery})` : table;
       }
 
+      groupByArray = groupByArray || [];
+      orderByArray = orderByArray || [];
+
       return [
         'SELECT ',
           columns.map(field => {
-            if (typeof field === 'string') {
-              return `(${formatTableField(table, field)}) AS ${this.escapeField(field)}`;
-            }
-            return `(${formatTableField(field.name || field.table || table, field.columnName)}) AS ${this.escapeField(field.alias)}`;
+            field = typeof field === 'string' ? {columnNames: [field], alias: field, transformation: v => v} : field;
+            let defn = field.transformation.apply(null, field.columnNames.map(columnName => {
+              return formatTableField(field.name || field.table || table, columnName);
+            }));
+            return `(${defn}) AS ${this.escapeField(field.alias)}`;
           }).join(','),
         ' FROM ',
           subQuery,
           ' AS ',
           this.escapeField(table),
-          this.generateJoinClause(table, joinArray),
+          this.generateJoinClause(table, joinArray, paramOffset),
           this.generateWhereClause(table, multiFilter, paramOffset),
-          this.generateGroupByClause(table, []),
-          this.generateOrderByClause(table, orderObjArray),
+          this.generateGroupByClause(table, groupByArray),
+          this.generateOrderByClause(table, orderByArray, groupByArray),
           this.generateLimitClause(limitObj)
       ].join('');
 
     }
 
-    generateCountQuery(table, columnName, multiFilter) {
+    generateCountQuery(subQuery, table) {
 
       return [
-        'SELECT COUNT(',
-          this.escapeField(columnName),
-        ') AS __total__ FROM ',
-          this.escapeField(table),
-          this.generateWhereClause(table, multiFilter)
+        `SELECT COUNT(*) `,
+        `AS __total__ FROM `,
+        subQuery ? `(${subQuery}) AS ` : '',
+        `${this.escapeField(table)}`
       ].join('');
 
     }
@@ -232,6 +235,41 @@ module.exports = (function() {
         ') RETURNING *'
       ].join('');
 
+    }
+
+    generateDeleteAllQuery(table, columnName, values, joins) {
+
+      let subQuery;
+
+      if (!joins) {
+
+        subQuery = `${values.map((v, i) => '\$' + (i + 1))}`;
+
+      } else {
+
+        subQuery = [
+          `SELECT ${this.escapeField(table)}.${this.escapeField(columnName)} FROM ${this.escapeField(table)}`
+        ];
+
+        subQuery = subQuery.concat(
+          joins.slice().reverse().map((j, i) => {
+            return [
+              `INNER JOIN ${this.escapeField(j.prevTable)} ON `,
+              `${this.escapeField(j.prevTable)}.${this.escapeField(j.prevColumn)} = `,
+              `${this.escapeField(j.joinTable)}.${this.escapeField(j.joinColumn)}`,
+              i === joins.length - 1 ?
+                ` AND ${this.escapeField(j.prevTable)}.${this.escapeField(j.prevColumn)} IN (${values.map((v, i) => '\$' + (i + 1))})` : ''
+            ].join('')
+          })
+        ).join(' ');
+
+      }
+
+      return [
+        `DELETE FROM ${this.escapeField(table)}`,
+        `WHERE ${this.escapeField(table)}.${this.escapeField(columnName)}`,
+        `IN (${subQuery})`
+      ].join(' ');
     }
 
     generateInsertQuery(table, columnNames) {
@@ -273,7 +311,7 @@ module.exports = (function() {
           [
             this.generateAlterTableDropUniqueKey,
             this.generateAlterTableAddUniqueKey
-          ][properties.primary_key | 0].call(this, table, columnName)
+          ][properties.unique | 0].call(this, table, columnName)
         );
       }
 
@@ -318,6 +356,10 @@ module.exports = (function() {
 
     }
 
+    preprocessWhereObj(table, whereObj) {
+      return whereObj;
+    }
+
     parseWhereObj(table, whereObj) {
 
       return whereObj.map((where, i) => {
@@ -329,8 +371,7 @@ module.exports = (function() {
           value: where.value,
           ignoreValue: !!this.comparatorIgnoresValue[where.comparator],
           joined: where.joined,
-          via: where.via,
-          child: where.child
+          joins: where.joins
         };
       });
 
@@ -341,6 +382,7 @@ module.exports = (function() {
       return whereObjArray
         .filter(v => v)
         .sort((a, b) => a.joined === b.joined ? a.table > b.table : a.joined > b.joined) // important! must be sorted.
+        .map(v => this.preprocessWhereObj(table, v))
         .map(v => this.parseWhereObj(table, v));
 
     }
@@ -353,7 +395,19 @@ module.exports = (function() {
         return '';
       }
 
-      return (' WHERE (' + multiFilter.map(whereObj => {
+      return ` WHERE ${this.generateOrClause(table, multiFilter, paramOffset)}`;
+
+    }
+
+    generateOrClause(table, multiFilter, paramOffset) {
+
+      paramOffset = Math.max(0, parseInt(paramOffset) || 0);
+
+      if (!multiFilter || !multiFilter.length) {
+        return '';
+      }
+
+      return ('(' + multiFilter.map(whereObj => {
         return this.generateAndClause(table, whereObj);
       }).join(') OR (') + ')').replace(/__VAR__/g, () => `\$${1 + (paramOffset++)}`);
 
@@ -379,7 +433,7 @@ module.exports = (function() {
 
         if (!joined) {
 
-          clauses.push(comparators[whereObj.comparator](whereObj.refName));
+          clauses.push(comparators[whereObj.comparator](whereObj.refName, whereObj.value));
 
         } else {
 
@@ -393,14 +447,13 @@ module.exports = (function() {
 
             joinedClauses.push({
               table: table,
-              via: whereObj.via,
-              child: whereObj.child,
+              joins: whereObj.joins,
               clauses: currentJoinedClauses
             });
 
           }
 
-          currentJoinedClauses.push(comparators[whereObj.comparator](whereObj.refName));
+          currentJoinedClauses.push(comparators[whereObj.comparator](whereObj.refName, whereObj.value));
 
         }
 
@@ -408,17 +461,24 @@ module.exports = (function() {
 
       joinedClauses = joinedClauses.map(jc => {
 
-        jc.clauses.push(
-          jc.child ?
-          `${this.escapeField(jc.table)}.${this.escapeField(jc.via)} = ${this.escapeField(table)}.${this.escapeField('id')}` :
-          `${this.escapeField(table)}.${this.escapeField(jc.via)} = ${this.escapeField(jc.table)}.${this.escapeField('id')}`
-        );
-
         return [
           `(`,
             `SELECT ${this.escapeField(jc.table)}.${this.escapeField('id')} `,
             `FROM ${this.escapeField(jc.table)} `,
-            `WHERE (${jc.clauses.join(' AND ')}) `,
+            jc.joins.map((join, i) => {
+              return [
+                `INNER JOIN ${this.escapeField(join.joinTable)} AS ${this.escapeField(join.joinAlias)} ON `,
+                `${this.escapeField(join.joinAlias)}.${this.escapeField(join.joinColumn)} = `,
+                `${this.escapeField(join.prevTable || table)}.${this.escapeField(join.prevColumn)}`,
+                i === jc.joins.length - 1 ?
+                  [
+                    ` AND `,
+                    `${this.escapeField(join.joinAlias)}.${this.escapeField(join.joinColumn)} = `,
+                    `${this.escapeField(jc.table)}.${this.escapeField(join.joinColumn)} `,
+                    `AND (${jc.clauses.join(' AND ')}) `
+                  ].join('') : ''
+              ].join('')
+            }).join(' '),
             `LIMIT 1`,
           `) IS NOT NULL`
         ].join('');
@@ -435,39 +495,51 @@ module.exports = (function() {
         .map(whereObj => whereObj.value);
     }
 
-    generateOrderByClause(table, orderObjArray) {
+    generateOrderByClause(table, orderByArray, groupByArray) {
 
-      return (!orderObjArray || !orderObjArray.length) ? '' : ' ORDER BY ' + orderObjArray.map(v => {
-        let columnStr = `${this.escapeField(table)}.${this.escapeField(v.columnName)}`;
-        return (v.format ? v.format(columnStr) : columnStr)  + ` ${v.direction}`;
+      return !orderByArray.length ? '' : ' ORDER BY ' + orderByArray.map(v => {
+        let columns = v.columnNames.map(columnName => `${this.escapeField(table)}.${this.escapeField(columnName)}`);
+        return `${v.transformation.apply(null, columns)} ${v.direction}`;
       }).join(', ');
 
     }
 
-    generateJoinClause(table, joinArray) {
+    generateJoinClause(table, joinArray, paramOffset) {
+
+      paramOffset = Math.max(0, parseInt(paramOffset) || 0);
 
       return (!joinArray || !joinArray.length) ? '' :
-        joinArray.map(join => {
+        joinArray.map(joinData => {
 
-          let fields = join.field instanceof Array ? join.field : [join.field]
-          let baseFields = join.baseField instanceof Array ? join.baseField : [join.baseField]
+          return joinData.map((join, i) => {
 
-          let statements = [];
+            let joinColumns = join.joinColumn instanceof Array ? join.joinColumn : [join.joinColumn]
+            let prevColumns = join.prevColumn instanceof Array ? join.prevColumn : [join.prevColumn]
 
-          fields.forEach(field => {
-            baseFields.forEach(baseField => {
-              statements.push(
-                `${this.escapeField(join.name || join.table)}.${this.escapeField(field)} = ` +
-                `${this.escapeField(table)}.${this.escapeField(baseField)}`
-              );
+            let statements = [];
+
+            joinColumns.forEach(joinColumn => {
+              prevColumns.forEach(prevColumn => {
+                statements.push(
+                  `${this.escapeField(join.joinAlias)}.${this.escapeField(joinColumn)} = ` +
+                  `${this.escapeField(join.prevAlias || table)}.${this.escapeField(prevColumn)}`
+                );
+              });
             });
-          });
 
-          return [
-            ` LEFT JOIN ${this.escapeField(join.table)}`,
-            `AS ${this.escapeField(join.name || join.table)}`,
-            `ON (${statements.join(' OR ')})`
-          ].join(' ');
+
+            let filterClause = this.generateOrClause(join.joinAlias, join.multiFilter, paramOffset);
+            join.multiFilter && join.multiFilter.forEach(arr => paramOffset += arr.length);
+
+            return [
+              ` LEFT JOIN ${this.escapeField(join.joinTable)}`,
+              ` AS ${this.escapeField(join.joinAlias)}`,
+              ` ON (${statements.join(' OR ')}`,
+              filterClause ? ` AND ${filterClause}` : '',
+              ')'
+            ].join('');
+
+          }).join('')
 
         }).join('');
 
@@ -475,12 +547,9 @@ module.exports = (function() {
 
     generateGroupByClause(table, groupByArray) {
 
-      return (!groupByArray || !groupByArray.length) ? '' : ' GROUP BY ' + groupByArray.map(v => {
-        if (v.format) {
-          return v.format.apply(v, v.columns.map((c, i) => `${this.escapeField(v.tables[i] || table)}.${this.escapeField(c)}`));
-        } else {
-          return `${this.escapeField(v.tables[0] || table)}.${this.escapeField(v.columns[0])}`;
-        }
+      return !groupByArray.length ? '' : ' GROUP BY ' + groupByArray.map(v => {
+        let columns = v.columnNames.map(column => `${this.escapeField(table)}.${this.escapeField(column)}`);
+        return v.transformation.apply(null, columns);
       }).join(', ');
 
     }
@@ -537,12 +606,14 @@ module.exports = (function() {
     lte: field => `${field} <= __VAR__`,
     gt: field => `${field} > __VAR__`,
     gte: field => `${field} >= __VAR__`,
-    like: field => `${field} LIKE '%' || __VAR__ || '%'`,
-    ilike: field => `${field} ILIKE '%' || __VAR__ || '%'`,
+    contains: field => `${field} LIKE '%' || __VAR__ || '%'`,
+    icontains: field => `${field} ILIKE '%' || __VAR__ || '%'`,
     startswith: field => `${field} LIKE __VAR__ || '%'`,
     istartswith: field => `${field} ILIKE __VAR__ || '%'`,
     endswith: field => `${field} LIKE '%' || __VAR__`,
     iendswith: field => `${field} ILIKE '%' || __VAR__`,
+    like: field => `${field} LIKE __VAR__`,
+    ilike: field => `${field} ILIKE __VAR__`,
     is_null: field => `${field} IS NULL`,
     not_null: field => `${field} IS NOT NULL`,
     in: field => `ARRAY[${field}] <@ __VAR__`,
@@ -553,6 +624,8 @@ module.exports = (function() {
     is_null: true,
     not_null: true
   };
+
+  DatabaseAdapter.prototype.documentTypes = [];
 
   DatabaseAdapter.prototype.aggregates = {
     'sum': field => `SUM(${field})`,
@@ -572,6 +645,8 @@ module.exports = (function() {
   DatabaseAdapter.prototype.types = {};
   DatabaseAdapter.prototype.sanitizeType = {};
   DatabaseAdapter.prototype.escapeFieldCharacter = '';
+  DatabaseAdapter.prototype.columnDepthDelimiter = '';
+  DatabaseAdapter.prototype.whereDepthDelimiter = '';
 
   DatabaseAdapter.prototype.supportsForeignKey = false;
 

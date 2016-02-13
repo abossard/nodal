@@ -6,9 +6,9 @@ module.exports = (function() {
 
   class {{= data.name }}Middleware {
 
-    exec(controller, data, callback) {
+    exec(controller, callback) {
 
-      callback(null, data);
+      callback(null);
       return false;
 
     }
