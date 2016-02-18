@@ -21,28 +21,16 @@ module.exports = (() => {
 
     }
 
-    parsePath(requrl) {
+    match(path) {
 
-      let urlData = url.parse(requrl, true);
-      let path = urlData.pathname;
-      if (path[path.length - 1] === '/') {
-        path = path.substr(path, path.length - 1);
-      }
-
-      return path;
-
-    }
-
-    match(requrl) {
-
-      let match = this.parsePath(requrl).match(this.regex);
+      let match = path.match(this.regex);
       return match ? [].slice.call(match, 1) : null;
 
     }
 
-    params(requrl) {
+    params(path) {
 
-      let matches = this.match(requrl).slice(1).map(v => v || '');
+      let matches = this.match(path).map(v => v || '');
       return this.names.reduce((obj, name, i) => {
         obj[name] = matches[i];
         return obj;
@@ -69,6 +57,18 @@ module.exports = (() => {
 
     }
 
+    parsePath(requrl) {
+
+      let urlData = url.parse(requrl, true);
+      let path = urlData.pathname;
+      if (path[path.length - 1] === '/') {
+        path = path.substr(path, path.length - 1);
+      }
+
+      return path;
+
+    }
+
     route(path) {
 
       let routeData = utilities.parseRegexFromString(path);
@@ -80,11 +80,12 @@ module.exports = (() => {
 
     find(url) {
 
+      let path = this.parsePath(url);
       let routes = this._routes;
 
       for (let i = 0, len = routes.length; i < len; i++) {
         let route = routes[i];
-        if (route.match(url)) {
+        if (route.match(path)) {
           return route;
         }
       }
@@ -100,12 +101,13 @@ module.exports = (() => {
 
       let fn = {
         'application/x-www-form-urlencoded': (body) => {
-          return this.parseQueryParameters(querystring.parse(body));
+          return this.parseQueryParameters(querystring.parse(body.toString()));
         },
         'application/json': body => {
           try {
-            return JSON.parse(body);
+            return JSON.parse(body.toString());
           } catch(e) {
+            console.log('Failed to parse JSON Body');
             return {};
           }
         }
@@ -152,8 +154,29 @@ module.exports = (() => {
 
     }
 
+    parseAuth(params, headers) {
+
+      let auth = {};
+
+      if (params.access_token) {
+        auth.token_type = 'bearer';
+        auth.access_token = params.access_token || '';
+      }
+
+      if (headers['authorization']) {
+        let parts = headers['authorization'].split(' ');
+        if (parts.length === 2 && /^Bearer$/i.test(parts[0])) {
+            auth.token_type = 'bearer';
+            auth.access_token = parts[1];
+        }
+      }
+
+      return auth;
+    }
+
     prepare(ip, url, method, headers, body) {
 
+      let path = this.parsePath(url);
       let route = this.find(url);
       body = body instanceof Buffer ? body : new Buffer(body + '');
 
@@ -161,11 +184,11 @@ module.exports = (() => {
         remoteAddress: ip,
         url: url,
         method: method,
-        path: route.parsePath(url),
+        path: path,
         controller: route.controller,
         headers: headers,
-        matches: route.match(url),
-        route: route.params(url),
+        matches: route.match(path),
+        route: route.params(path),
         body: body
       };
 
@@ -178,6 +201,7 @@ module.exports = (() => {
         query: new StrongParam(this.parseQueryParameters(url.parse(routeData.url, true).query)),
         body: new StrongParam(this.parseBody(routeData.body, routeData.headers)),
         path: routeData.path,
+        auth: this.parseAuth(url.parse(routeData.url, true).query, routeData.headers),
         matches: routeData.matches,
         route: routeData.route,
         remoteAddress: routeData.headers['x-forwarded-for'] || routeData.remoteAddress,
@@ -203,7 +227,7 @@ module.exports = (() => {
         controller.middleware.prepend(this.middleware);
         controller.renderware.append(this.renderware);
 
-        controller.run(routeData.method, params.id);
+        controller.run();
 
         return controller;
 
