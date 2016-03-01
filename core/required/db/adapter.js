@@ -451,6 +451,8 @@ module.exports = (function() {
               clauses: currentJoinedClauses
             });
 
+            clauses.push(null);
+
           }
 
           currentJoinedClauses.push(comparators[whereObj.comparator](whereObj.refName, whereObj.value));
@@ -485,7 +487,14 @@ module.exports = (function() {
 
       });
 
-      return clauses.concat(joinedClauses).join(' AND ');
+      clauses = clauses.map(c => {
+        if (!c) {
+          return joinedClauses.shift();
+        }
+        return c;
+      });
+
+      return clauses.join(' AND ');
 
     }
 
@@ -507,11 +516,16 @@ module.exports = (function() {
     generateJoinClause(table, joinArray, paramOffset) {
 
       paramOffset = Math.max(0, parseInt(paramOffset) || 0);
+      let joinedAlready = {};
 
       return (!joinArray || !joinArray.length) ? '' :
         joinArray.map(joinData => {
 
+          joinData = joinData.filter(join => !joinedAlready[join.joinAlias]);
+
           return joinData.map((join, i) => {
+
+            joinedAlready[join.joinAlias] = true;
 
             let joinColumns = join.joinColumn instanceof Array ? join.joinColumn : [join.joinColumn]
             let prevColumns = join.prevColumn instanceof Array ? join.prevColumn : [join.prevColumn]

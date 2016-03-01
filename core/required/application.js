@@ -4,6 +4,7 @@ module.exports = (() => {
 
   const http = require('http');
   const url = require('url');
+  const utilities = require('./utilities.js');
 
   class Application {
 
@@ -51,7 +52,8 @@ module.exports = (() => {
 
     getTime() {
 
-      return new Date().valueOf();
+      let hrTime = process.hrtime()
+      return (hrTime[0] * 1000 + hrTime[1] / 1000000);
 
     }
 
@@ -61,20 +63,20 @@ module.exports = (() => {
     * @param {String} url The url that was hit
     * @param {String} t The time to execute the request
     */
-    logResponse(statusCode, url, t) {
+    logResponse(statusCode, url, t, str) {
 
       let num = Math.floor(statusCode / 100);
-      let str = '';
+      str = str || '';
       if (num === 2) {
-        str = 'Request OK';
+        str = str || 'Request OK';
       } else if (num === 3) {
-        str = 'Request Redirect';
+        str = str || 'Request Redirect';
       } else if (num === 4) {
-        str = 'Request Error';
+        str = str || 'Request Error';
       } else if (num === 5) {
-        str = 'Server Error';
+        str = str || 'Server Error';
       } else {
-        str = 'Unknown';
+        str = str || 'Unknown';
       }
 
       console.log(`[Nodal.${process.pid}] ${str} [${statusCode | 0}]: ${url} loaded in ${t} ms`);
@@ -88,7 +90,8 @@ module.exports = (() => {
     */
     handler(req, res) {
 
-      let body = new Buffer(0);
+      let body = [];
+      let bodyLength = 0;
       let start = this.getTime();
 
       console.log(`[Nodal.${process.pid}] Incoming Request: ${req.url} from ${req.connection.remoteAddress}`);
@@ -97,18 +100,32 @@ module.exports = (() => {
 
       if (!route) {
         res.writeHead(404, {});
-        res.end('404 - Not found');
+        res.end('404 - Not Found');
         let t = this.getTime() - start;
         this.logResponse(res.statusCode, req.url, t);
         return;
       }
 
       req.on('data', data => {
-        body = Buffer.concat([body, data]);
-        (body.length > 1E6) && (res.end(), req.connection.destroy());
+        body.push(data);
+        bodyLength += data.length;
+        if (bodyLength > (utilities.parseSize(process.env.MAX_UPLOAD_SIZE) || utilities.parseSize('20MB'))) {
+          res.writeHead(413, {});
+          res.end('413 - Request Too Large');
+          req.connection.destroy();
+          let t = this.getTime() - start;
+          this.logResponse(
+            res.statusCode,
+            req.url,
+            t,
+            `Request too large. (${bodyLength}, Max: ${process.env.MAX_UPLOAD_SIZE || '20MB'})`
+          );
+        }
       });
 
       req.on('end', () => {
+
+        body = Buffer.concat(body);
 
         return this.router.dispatch(
           this.router.prepare(
@@ -135,7 +152,7 @@ module.exports = (() => {
               res.write(data);
             }
 
-            this.logResponse(res.statusCode, req.url, t);
+            this.logResponse(res.statusCode, req.url, t.toFixed(3));
             res.end();
 
           }
